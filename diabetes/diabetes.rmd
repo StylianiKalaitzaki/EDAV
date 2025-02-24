@@ -1,0 +1,490 @@
+# Analysis of the diabetes data set in R
+### by Styliani Kalaitzaki
+
+## Libraries
+```{r, message = FALSE, warning=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+library(tidyr)
+library(naniar)
+library(visdat)
+library(dplyr)
+library(mice)
+```
+
+## Part 1
+
+## Reading data
+```{r}
+diabetes <- read.csv("diabetes.csv", header=T, sep=",")
+```
+
+# Descriptive statistics
+```{r}
+
+str(diabetes)
+summary(diabetes)
+head(diabetes)
+
+unique(diabetes$diabetes_diagnosis)
+unique(diabetes$gender)
+
+# Identify columns that are either integer or character
+columns_to_convert <- mapply(function(x) is.integer(x) | is.character(x), diabetes)
+
+# Factor the categorical variables
+diabetes[, columns_to_convert] <- lapply(diabetes[,columns_to_convert], factor)
+
+
+```
+The dataset consists of 403 records with 22 variables.
+It appears that columns diabetes_diagnosis, gender, location, BMI_cat_3, BMI_cat_5, age_cat, and waist_hip_cat are categorical, while all other columns are of the numeric type. Additionally, it is observed that certain variables contain missing values (NA).
+
+### Checking for missing values
+
+#### Count how many (%) of all `r nrow(diabetes)` rows are complete.
+```{r}
+sum(complete.cases(diabetes))
+nrow(diabetes[complete.cases(diabetes), ])/nrow(diabetes)*100
+```
+
+Hence, `r nrow(diabetes) - sum(complete.cases(diabetes))` rows or `r 100 - (nrow(diabetes[complete.cases(diabetes), ])/nrow(diabetes)*100)`% of rows have at least one missing value.
+
+#### Investigating missing values per column
+```{r}
+colSums(is.na(diabetes))
+```
+Missing values :
+
+total_cholesterol = 1  
+hdl = 1  
+total_chol_hdl_ratio = 1  
+weight = 1  
+height = 5  
+BMI = 6  
+BMI_cat_5 = 12  
+BMI_cat_3 = 12  
+glycosoloatedhgb = 13  
+diabetes_diagnosis = 13  
+waist_hip_cat = 19  
+
+### Checking for outliers
+
+```{r,warning = FALSE}
+ggplot(diabetes, aes(weight)) + 
+  geom_boxplot()
+```
+
+It appears that there are some outliers on the weight variable. However, in medical datasets like those related to diabetes, extreme values might be valid and biologically meaningful. Hence, extremely high weights may be associated with specific medical conditions. Removing such values could lead to the loss of important information.
+
+Similarly, this principle applies to the remaining variables, and as a result, I have opted not to eliminate any outliers within this dataset.
+
+
+# Data Visualization
+
+#### Visualizing the categorical columns
+
+```{r, warning=FALSE}
+# Identify non-numeric variables
+non_numeric_vars <- sapply(diabetes, function(x) !is.numeric(x))
+
+# Create a list of ggplot objects for each categorical variable
+plots <- lapply(names(diabetes)[non_numeric_vars], function(var) {
+  ggplot(diabetes, aes(factor(get(var)))) +
+    geom_bar(position="dodge") +
+    labs(title = var, x = var)})
+
+# Arrange the plots in a grid
+grid.arrange(grobs = plots, ncol = 3)
+
+```
+
+Assuming that the target class is diabetes_diagnosis the above graph shows that the data is unbalanced. The number of non-diabetic is `r table(diabetes$diabetes_diagnosis)[[1]]` and the number of diabetic patients is `r table(diabetes$diabetes_diagnosis)[[2]]`.
+
+
+The dataset exhibits a roughly equal distribution of individuals from both locations, with gender 0 having slightly fewer representatives than gender 1. The waist_hip_cat variable appears somewhat unbalanced as well. 
+
+Upon dividing BMI into three categories, the distribution appears nearly uniform, but when categorized into five groups, there is a noticeable decrease in distribution as BMI values increase. It seems that fewer people have higher BMI values, and there is a concentration of individuals in the lower BMI categories.
+
+The age distribution peaks at the second category and slowly decreases as age increases. (Assuming the categories are ordinal)
+
+#### Visualizing the numerical columns
+
+```{r, warning=FALSE,message=FALSE}
+
+# Reshape the data to long format
+diabetes_long <- gather(diabetes, key = "variable", value = "value", -id, -location, -gender, -diabetes_diagnosis, -BMI_cat_5, -age_cat, -waist_hip_cat, -BMI_cat_3)
+
+# Create a histogram for each variable with facets
+ggplot(diabetes_long, aes(x = value)) +
+  geom_histogram(fill = "blue", color = "black", alpha = 0.7) +
+  labs(title = "Histograms of Numeric Variables",
+       x = "Value",
+       y = "Frequency") +
+  facet_wrap(~variable, scales = "free")  # Creates a separate histogram for each variable
+
+```
+
+
+```{r, warning=FALSE}
+# Create a density plots for each variable with facets
+ggplot(diabetes_long, aes(x = value)) +
+  geom_density() +
+  labs(title = "Density plots of Numeric Variables",
+       x = "Value",
+       y = "Frequency") +
+  facet_wrap(~variable, scales = "free")  # Creates a separate density plot for each variable
+
+
+```
+
+The first observations here suggest that some of the distributions are right-skewed (BMI, bp.1s, glukosoloatedhgb, stabilized.glucose) which means a significant proportion of individuals may fall within the normal or healthy range of the medical feature represented. However, attention should be given to the right tail of the distributions, as it represents individuals with elevated values. We might get crucial information and a better understanding of potential health risks by investigating possible associations between those features .
+
+
+**Age:** The dataset appears to include only adults as the age distribution begins slightly below 20. There are more individuals with younger ages in the dataset, and the number of individuals decreases slightly as age increases. This is a common pattern, as populations often have a larger proportion of younger individuals, with the number of individuals tapering off as you move towards older age groups. 
+ The distribution is less peaked (~negative kurtosis) and has fewer outliers or extreme values in the tails. The ages are more concentrated around the mean, and there are fewer individuals with very high or very low ages. 
+
+**height:** There are slightly more individuals with taller heights in the dataset, and the number of individuals decreases slightly as height decreases. There are fewer outliers or extreme values in the taller range than the shorter.
+
+**weight:** There seems to be some extreme values towards the heavier range. It could prove informative to investigate possible associations between this group and other features.
+
+## Visualization of the amount of missing data
+Showing in black the location of missing values, and also providing information on the overall percentage of missing values overall (in the legend), and in each variable.
+```{r,warning=FALSE}
+vis_miss(diabetes)
+
+gg_miss_var(diabetes)
+
+```
+
+## Investigating variables with diabetes_diagnosis as target class
+
+Given the dataset's context, which suggests its potential utility in constructing a predictive model for diabetes diagnosis, it is crucial to designate diabetes as the target variable. This focused approach facilitates a thorough exploration of features and relationships, providing valuable insights for informed model development. 
+
+```{r, warning=FALSE}
+# Create side-by-side bar chart of gender by diagnosis proportions
+ggplot(diabetes, aes(x = diabetes_diagnosis, fill = gender)) + 
+  geom_bar(position = "fill",stat = "count")
+```
+
+The above plot indicates an equal distribution of diabetes diagnosis percentages between both genders.
+
+
+
+The following plot shows the distribution of age categories within each level of diabetes_diagnosis, while the second one is good for comparing the counts of different age categories across levels of diabetes_diagnosis.
+
+In diabetes_diagnosis at level 0, the data indicates a predominant presence of individuals in the 2nd age category, with the 1st age category following closely. Conversely, at level 1 of diabetes_diagnosis, a significant proportion of individuals belong to age category 3, whereas those in the 1st age category constitute the minority.
+
+In the second plot, it's evident that the proportion of individuals in age category 3 at level 1 of diabetes_diagnosis far surpasses the proportion of the largest category at level 0.
+
+Assuming the age categories are ordinal and knowing the dataset includes only adults we can infer that higher age categories are associated with a higher likelihood of diabetes.
+
+```{r, warning=FALSE}
+# Create side-by-side bar chart of age_cat by diagnosis
+ggplot(diabetes, aes(x = diabetes_diagnosis, fill = age_cat)) + 
+  geom_bar(position = "dodge")
+# Create side-by-side bar chart of age_cat by diagnosis
+ggplot(diabetes, aes(x = diabetes_diagnosis, fill = age_cat)) + 
+  geom_bar(position = "fill", stat = "count")
+
+```
+
+
+```{r, warning=FALSE}
+# Create side-by-side bar chart of location by diagnosis
+ggplot(diabetes, aes(x = diabetes_diagnosis, fill = location)) + 
+  geom_bar(position = "dodge")
+```
+
+The above plot indicates an approximately equal distribution of diabetes diagnosis percentages between both locations.
+
+```{r, warning=FALSE}
+
+# Create side-by-side bar chart of BMI_cat_3 by diagnosis
+ggplot(diabetes, aes(x = diabetes_diagnosis, fill = BMI_cat_3)) + 
+  geom_bar(position = "dodge")
+
+# Create side-by-side bar chart of BMI_cat_5 by diagnosis
+ggplot(diabetes, aes(x = diabetes_diagnosis, fill = BMI_cat_5)) + 
+  geom_bar(position = "dodge")
+```
+
+We can see that individuals in categories 2 and 3 of BMI_cat_5 are more likely to be diagnosed with diabetes than the rest. Same with category 3 of BMI_cat_3.
+
+```{r, warning=FALSE}
+
+# Create side-by-side bar chart of waist_hip_cat by diagnosis
+ggplot(diabetes, aes(x = diabetes_diagnosis, fill = waist_hip_cat)) + 
+  geom_bar(position = "dodge")
+```
+
+Individuals at level 0 of wais_hip_ratio are less likely to be diagnosed with diabetes than those at level 1.
+
+Below, the median length of diabetes stabilized glucose is greater than that of not-diabetes.
+
+We can also infer that there is greater variability in stabilized glucose levels among individuals with diabetes.
+```{r, warning=FALSE}
+ggplot(diabetes,aes(x = diabetes_diagnosis, y = stabilized.glucose)) +
+  geom_boxplot()
+```
+
+```{r, warning=FALSE}
+ggplot(diabetes,aes(stabilized.glucose, fill = diabetes_diagnosis)) +
+  geom_density(alpha = 0.3)
+```
+
+#### Visualizing relationships between numeric variables 
+```{r, warning=FALSE,message=FALSE}
+ggplot(diabetes,aes(stabilized.glucose,glycosoloatedhgb, color = diabetes_diagnosis)) +
+  geom_point()
+```
+
+The scatter plot reveals the presence of somewhat distinct clusters, implying the existence of potential subgroups within the dataset. These clusters align with different diabetes diagnoses, suggesting diverse patterns in the relationship between stabilized glucose and glycosoloatedhgb levels. Notably, within the diabetes_diagnosis variable, Level 1 data points exhibit a greater spread compared to Level 0. This indicates increased variability in stabilized glucose and glycosoloatedhgb levels among individuals diagnosed with Level 1 diabetes. 
+
+
+```{r, warning=FALSE}
+
+ggplot(diabetes,aes(stabilized.glucose,glycosoloatedhgb)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  stat_smooth(method = "lm", formula = y ~ x, color = "red", se = FALSE)
+
+```
+
+It is observed a linear trend, which signifies that the logarithm of stabilized.glucose is linearly dependent from the logarithm of glycosoloatedhgb. There seems to be a positive correlation between the variables. However, the overlap in the lower left corner may also suggest that the relationship between stabilized glucose and glycosoloatedhgb is not strictly linear, especially at lower values.
+
+
+```{r, warning=FALSE}
+ggplot(diabetes,aes(glycosoloatedhgb,age, color = diabetes_diagnosis)) +
+  geom_point()
+```
+
+It is reasonable to conclude, that glycosoloatedhgb is a pivotal factor in diabetes diagnosis, given its consistent level of data point segregation observed here as well as in a prior scatter plot.
+
+```{r, warning=FALSE}
+ggplot(diabetes,aes(weight,BMI)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  stat_smooth(method = "lm", formula = y ~ x, color = "red", se = FALSE)
+
+ggplot(diabetes,aes(waist,hip)) +
+  geom_point() +
+  scale_x_log10() +
+  scale_y_log10() +
+  stat_smooth(method = "lm", formula = y ~ x, color = "red", se = FALSE)
+```
+
+Obviously, the correlation of weight and BMI is positive given BMI's computation formula.
+
+Similarly, as waist size increases, hip size increases as well.
+
+
+An interesting observation appears in the scatter plot below as total_cholesterol exhibits no linear correlation with BMI or waist_hip_ratio.
+
+```{r, warning=FALSE}
+ggplot(diabetes,aes(x = total_cholesterol, y = BMI)) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  geom_point()
+
+ggplot(diabetes,aes(x = total_cholesterol, y = waist_hip_ratio)) + 
+  scale_x_log10() +
+  scale_y_log10() +
+  geom_point()
+
+```
+
+```{r, warning=FALSE}
+
+ggplot(diabetes, aes(x = gender, y = height)) +
+  geom_boxplot() +
+  labs(title = "Height vs Gender")
+```
+
+Within the dataset, individuals of gender 0 tend to have higher median heights compared to individuals identified as gender 1. This suggests a general trend where gender 0 is predominantly taller than gender 1 based on the distribution of height values. It is reasonable to infer that gender 0 corresponds to males and gender 1 to females based on this observed pattern.
+
+```{r,warning=FALSE}
+
+ggplot(diabetes, aes(x = diabetes_diagnosis, y = glycosoloatedhgb)) +
+  geom_boxplot() +
+  labs(title = "Diabetes Diagnosis vs glycosoloatedhgb")
+```
+
+Consistent with earlier observations, it is reaffirmed here that glycosoloatedhgb serves as an indicative marker for diabetes. Individuals diagnosed with diabetes exhibit higher levels of glycosoloatedhgb compared to those without a diabetes diagnosis.
+
+
+```{r,warning=FALSE}
+
+ggplot(diabetes, aes(x = BMI_cat_5, y = bp.1d)) +
+  geom_boxplot() +
+  labs(title = "Diabetes Diagnosis vs glycosoloatedhgb")
+```
+
+As BMI increases median bp.1d increases as well with a slight decrease at level 5 of BMI.
+
+## Part 2
+
+### Reading data
+```{r,warning=FALSE}
+diabetes2 <- read.csv("diabetes2.csv", header=T, sep=",")
+original <- diabetes[,c("total_cholesterol","age","gender","weight")]
+str(diabetes2)
+
+diabetes2$gender <- as.factor(diabetes2$gender)
+```
+
+The dataset consists of 403 records with 4 variables.The variable gender is categorical while the other three numerical.
+
+
+## Statistics of missing values
+
+There are `r n_miss(diabetes2)` total missing values in the data. Below is their decomposition: 
+
+```{r,warning=FALSE}
+
+colSums(is.na(diabetes2))
+```
+
+The proportion of missings is `r prop_miss(diabetes2)` and proportion of complete values for the dataframe is `r prop_complete(diabetes2)`.
+
+```{r,warning=FALSE}
+# Summarize missingness in each variable
+miss_var_summary(diabetes2)
+
+# Summarize missingness in each case
+miss_case_summary(diabetes2)
+```
+
+According to theory, if missing data for a certain feature is more than 5%, then
+probably the feature should be left out. However, in this case if we follow this rule there will be no dataset left.
+
+## Visualization of missing data
+
+```{r,warning=FALSE}
+
+# visualize and sort the columns by missingness
+vis_miss(diabetes2, sort_miss = TRUE)
+
+# Visualize and cluster all of the missingness
+vis_miss(diabetes2, cluster = TRUE)
+
+# The missingness pattern
+gg_miss_upset(diabetes2)
+
+```
+
+Exploring the possibility that older females may be hesitant to disclose their age due to societal norms, and individuals with higher body weight might prefer not to reveal this information, we can utilize these considerations and perhaps others, as a basis for imputation.
+
+## Dealing with missing values
+
+### Imputation
+
+```{r,warning=FALSE}
+init = mice(diabetes2, maxit=0) 
+meth = init$method
+predM = init$predictorMatrix
+
+predM[, c("total_cholesterol")]=0
+
+# specify the methods for imputing the missing values
+meth[c("age")]="norm" 
+meth[c("gender")]="logreg" 
+meth[c("weight")]="norm"
+
+# run the multiple (m=5) imputation
+set.seed(103)
+imputed = mice(diabetes2, method=meth, predictorMatrix=predM, m=5)
+
+# create a dataset after imputation
+imputed <- complete(imputed)
+
+# check for missings in the imputed dataset
+colSums(is.na(imputed))
+
+# Accuracy
+
+# Weight
+actual <- original$weight[is.na(diabetes2$weight)]
+predicted <- imputed$weight[is.na(diabetes2$weight)]
+mean(actual,na.rm = TRUE)
+mean(predicted)
+
+# Gender
+actual <- original$gender[is.na(diabetes2$gender)] 
+predicted <- imputed$gender[is.na(diabetes2$gender)] 
+table(actual)
+table(predicted)
+
+# total_cholesterol
+actual <- original$total_cholesterol[is.na(diabetes2$total_cholesterol)]
+predicted <- imputed$total_cholesterol[is.na(diabetes2$total_cholesterol)]
+mean(actual,na.rm = TRUE)
+mean(predicted)
+
+# age
+actual <- original$age[is.na(diabetes2$age)]
+predicted <- imputed$age[is.na(diabetes2$age)]
+mean(actual,na.rm = TRUE)
+mean(predicted)
+
+
+```
+
+The accuracy of the model seems satisfactory enough.
+
+By removing rows with any missing value the means and medians of the original and removed one look close enough:
+```{r,warning=FALSE}
+# Remove rows with any missing values
+removed <- na.omit(diabetes2)
+
+# Check if there are still missing values in the new dataset
+colSums(is.na(removed))
+
+summary(removed)
+summary(original)
+```
+
+If we assume that certain women may choose not to disclose their age and weight due to social conventions, one approach could involve imputing the missing gender as female (1) in instances where either age or weight is missing along with gender.
+```{r,warning=FALSE}
+
+imputed_gender <- data.frame(diabetes2)
+
+imputed_gender[is.na(imputed_gender$gender) & (is.na(imputed_gender$age) | is.na(imputed_gender$weight)), 'gender'] <- 1
+imputed_gender[is.na(imputed_gender$gender), 'gender'] <- 0
+
+# Gender
+actual <- original$gender[is.na(diabetes2$gender)] 
+predicted <- imputed_gender$gender[is.na(diabetes2$gender)] 
+table(actual)
+table(predicted)
+
+# Create a data frame with actual and predicted values
+results <- data.frame(gender_true = original$gender, gender_pred = imputed_gender$gender)
+
+# Compute confusion matrix
+conf_matrix <- table(results$gender_true, results$gender_pred)
+
+# Compute precision
+precision <- conf_matrix[2, 2] / sum(conf_matrix[, 2])
+
+# Compute recall
+recall <- conf_matrix[2, 2] / sum(conf_matrix[2, ])
+
+precision
+recall
+
+```
+
+The predicted values do not seem far of.
+
+
+In conclusion, the application of the MICE package appears to yield satisfactory results in handling missing values within the given diabetes dataset. The evaluation of imputation accuracy through mean comparisons between actual and imputed values for the variables suggests that the imputed values align closely with the observed data. This indicates that the MICE imputation method effectively captures the underlying patterns in the dataset.
+
+
+Comparing this imputation strategy with the alternative of removing rows with any missing values reveals that imputation retains more information, supporting the notion that imputing missing values can be a beneficial approach in preserving dataset integrity.
+
+
+Additionally, addressing potential missingness in the gender variable by imputing values based on the presence of missing age or weight values is an unpredictable approach since it is based on assumptions. The evaluation of imputed gender values through precision and recall metrics, along with a confusion matrix, provides a more nuanced assessment of imputation quality.
