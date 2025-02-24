@@ -1,0 +1,316 @@
+---
+title: "Music Albums"
+author: "Styliani Kalaitzaki"
+date: "January 2024"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=FALSE,message=FALSE}
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(ggplot2)
+library(spData)
+library(sf)
+library(mapsf)
+library(scales)
+```
+    
+Read data:
+```{r}
+music_catalog <- read.csv("album.csv")
+```
+
+### Explore the data
+
+```{r}
+str(music_catalog)
+```
+
+There are 11461 records and 3 variables:
+
+* genre
+* artist
+* album
+
+#### How many artists are there?
+
+```{r}
+music_catalog %>%
+  distinct(artist) %>%
+  summarise(artist_count = n())
+```
+
+#### Are there artists with multiple sets of genres?
+
+```{r}
+music_catalog %>% 
+  group_by(artist) %>%
+  mutate(n = n_distinct(genre, artist)) %>%
+  filter(n > 1)
+```
+
+Two artists, 'Midori' and 'James Colin' appear to have 2 sets of genres. Specifically, 'Midori' has albums devoted to two different genres, which might suggests he belongs in both. It is unclear which is the primary and which is the secondary. On the other hand,  'James Colin' on all 4 instances has Pop-Rock as a primary genre, but on two of them, Blues serves as a secondary genre. Unless there exists synonymy, it may be beneficial to preprocess the data by considering the removal of one instance.    
+However, as the order of genres remains unclear in the first case, we will refrain from removing either of them. We will address the second case specifically below.
+
+
+**Create a data frame for albums (genre, title, year)** by separating the 'genre' at the commas, keeping the first and droping the remainder. We extract the 'year' and 'title' from the 'album' column and remove the parentheses:
+
+```{r}
+albums <- separate(music_catalog, genre, into = "genre", sep = ",", extra = "drop") %>%
+  # Extract the year and remove the parentheses
+  mutate(
+    year = str_remove_all(str_extract(album, "\\((\\d{4})\\)") , "\\(|\\)"),
+    title = str_remove(str_extract(album, "\\)\\s*(.*)"), "\\)s*")
+  ) %>%
+  select(genre, title, year)
+```
+
+**Create two data frames for artists:**
+
+artists_2_genres: (name, primary_genre, secondary_genre)    
+artists_all_genres: (name, genre) [Contains duplicate rows of artists for different genres]
+
+```{r}
+artists_2_genres <- distinct(music_catalog[, c("genre","artist")]) %>%
+  separate(genre, into = c("primary_genre","secondary_genre"), sep = ",", extra = "drop", fill = "right") %>%
+  mutate(secondary_genre = coalesce(secondary_genre, primary_genre))
+
+
+artists_all_genres <- distinct(music_catalog[, c("genre","artist")]) %>%
+  separate_rows(genre, sep = ",")
+```
+
+
+We filter out the record of "James, Colin" with the same primary and secondary genre:
+```{r}
+artists_2_genres <- artists_2_genres %>%
+  filter(!(artist == "James, Colin" & primary_genre == secondary_genre))
+```
+
+
+
+### 1a. What are the percentages of artists per primary genre?
+
+Counting an artist only to their primary (first) genre.
+
+```{r}
+artists_2_genres %>%
+  count(primary_genre, sort = TRUE) %>%
+  mutate(percentage = (n / sum(n)), primary_genre = fct_reorder(primary_genre, percentage)) %>%
+  ggplot(aes(as.factor(primary_genre), percentage, fill = primary_genre)) + 
+  geom_col() +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format()) +
+  labs(title = "% of artists per primary genre", y = "# of artists", x = "Primary Genre") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+
+### 1b. What are the percentages of artists per genre?
+
+Counting an artist to all their genres.
+
+```{r}
+artists_all_genres %>%
+  # Count the number of artists per genre and sort in descending order
+  count(genre, sort = TRUE) %>%
+  # Calculate the percentage of artists per genre
+  mutate(percentage = (n / sum(n)), genre = fct_reorder(genre, percentage)) %>%
+  ggplot(aes(as.factor(genre), percentage, fill = genre)) + 
+  geom_col() +
+  coord_flip() +
+  # Format the y-axis labels as percentages
+  scale_y_continuous(labels = percent_format()) +
+  labs(title = "% of artists per genre", y = "# of artists", x = "Genre") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+Generally, the ranking remains unchanged. Specifically, the top 5 genres stay the same, while below there are slight variations in the ranking, with the most significant difference seen in Rap, which drops 4 positions. It seems that many artists do not combine it with their  primary genre. Additionally, the genre Holiday makes an appearance in the second graph, with no artist having it as their primary genre in the first.
+
+### 2. Album distribution per year
+
+```{r}
+albums %>% 
+  group_by(year) %>% 
+  # Create a new variable for the number of distinct albums per year
+  mutate(n_albums_per_year = n_distinct(title)) %>%
+  ggplot(aes(year, n_albums_per_year, group = 1)) +
+  geom_line() +
+  # Set discrete breaks on the x-axis
+  scale_x_discrete(breaks = seq(min(albums$year), max(albums$year), by = 5)) +
+  labs(title = "Album Distribution per Year", y = "# of Albums") +
+  theme_minimal()
+```
+
+Album numbers experienced a significant surge in the late 80s and early 90s. Following some fluctuations, including a local minimum in 2008, they rebounded, reaching a peak by 2012. However, since then there is an evident decline.
+
+
+### 3. Album distribution for the top 5 genres (primary) in time
+```{r}
+
+top_5_genres <- albums %>%
+  # Count the number of distinct albums per genre
+  group_by(genre) %>%
+  mutate(n_albums_per_genre = n_distinct(title)) %>%
+  # Arrange the genres in descending order based on the number of albums
+  arrange(desc(n_albums_per_genre)) %>%
+  # Select the unique genres and keep the top 5 genres
+  distinct(genre) %>%
+  head(5)
+
+albums %>% 
+  # Inner join the albums data with the top 5 genres based on the 'genre' column
+  inner_join(top_5_genres, by = "genre") %>%
+  select(names(albums)) %>%
+  # Calculate the number of distinct albums per genre and year
+  group_by(genre,year) %>% 
+  summarise(n_albums = n_distinct(title), .groups = "drop") %>%
+  # Create a line plot
+  ggplot(aes(year, n_albums, group = genre, color = genre)) +
+  geom_line() +
+  # Customize the x-axis breaks to show every 5 years
+  scale_x_discrete(breaks = seq(min(albums$year), max(albums$year), by = 5)) +
+  labs(title = "Album distribution per year for the top 5 genres", y = "# albums") +
+  theme_minimal()
+```
+
+The top 5 genres are Pop-Rock, Blues, Jazz, International and R&B. Pop-Rock consistently dominates the chart, with Blues appearing to have started overtaking it relatively recently.
+
+### 4. Exploring the correlation between artists' primary and secondary genres.
+
+
+```{r}
+# Create a two-way table of primary and secondary genres from the artists_2_genres data
+genre <- table(artists_2_genres$primary_genre, artists_2_genres$secondary_genre)
+```
+
+```{r, fig.width=10, fig.height=8}
+mosaicplot(
+     genre, 
+     shade = TRUE,
+     las = 2,
+     main = "Primary vs Secondary genres",
+     xlab = "Primary Genre",
+     ylab = "Secondary Genre"
+)
+```
+
+Since the genres are too many (21) for readable visualization, we subset for the top 5.
+
+```{r}
+barplot(
+  genre[top_5_genres$genre, top_5_genres$genre],
+  legend=T,
+  beside=T,
+  main= 'Primary by Secondary genre',
+  sub = 'For the top 5 genres',
+  col = c("purple", "blue", "green", "red", "orange")
+)
+
+```
+
+
+```{r}
+mosaicplot(
+  genre[top_5_genres$genre, top_5_genres$genre], 
+  shade = TRUE,
+  las = 1,
+  main = "Top 5 genres",
+  xlab = "Primary Genre",
+  ylab = "Secondary Genre"
+)
+```
+
+It appears that most artists tend to stick to a single genre rather than experimenting with combinations, regardless of the genre. Pop-Rock is the most popular genre.
+
+```{r}
+prop.table(genre[top_5_genres$genre,top_5_genres$genre])
+```
+
+
+### 5. What countries appear in the album titles?
+```{r}
+# Extract country names the 'world' dataset
+countries <- world$name_long
+
+# Add '\\b' at the start of each country name so that it finds words that start with the country name (otherwise it matches 'woman' after the country Oman)
+countries <- paste0("\\b", countries)
+
+# Combine country names into a regex pattern separated by '|'
+countries_str <- paste(countries, collapse="|")
+
+# Use str_extract to match country names in the 'title' column
+albums <- albums %>%
+  mutate(country = str_extract(title, countries_str))
+
+```
+
+```{r}
+world_albums <- albums %>%
+  # Filter out albums with missing country information
+  filter(!is.na(country)) %>%
+  
+  # Group albums by country and calculate the number of distinct titles
+  group_by(country) %>%
+  mutate(n_albums = n_distinct(title, year)) %>%
+  
+  # Merge with the 'world' dataset based on country names
+  merge(world, by.x = "country", by.y = "name_long", all.y = TRUE) %>%
+
+  # Select relevant columns for the final dataset
+  select(country, n_albums, geom) %>%
+  
+  # Keep only distinct countries
+  distinct(country, .keep_all = TRUE)
+
+```
+
+```{r}
+mf_theme("iceberg")
+
+mf_map(
+  x = st_sf(world_albums),
+  var = "n_albums",
+  type = "choro",
+  breaks = "geom",
+  nbreaks = 5,
+  pal = "Dark Mint",
+  border = "white",
+  lwd = 0.5,
+  leg_pos = c(-180,20),
+  leg_title = "# of albums",
+  leg_no_data = "0",
+  leg_val_rnd = 0
+)
+
+
+# layout
+mf_layout(
+  title = "Worldwide Album Distribution by Country",
+  credits = ""
+)
+```
+
+```{r}
+st_sf(world_albums) %>%
+  ggplot(aes(fill = n_albums)) + 
+  geom_sf() + 
+  coord_sf() +
+  theme_void() +
+  labs(fill = "# of albums") +
+  scale_fill_gradient2(low = "pink", high= "red", na.value = "white") 
+```
+
+
+Japan takes the top spot as the most frequently referenced country in album titles, with Latin countries like Spain and Brazil following closely behind.
