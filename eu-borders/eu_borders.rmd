@@ -1,0 +1,255 @@
+---
+title: "Network Graph Analysis: European Countries with Shared Borders"
+author: "Styliani Kalaitzaki"
+date: "December 2023"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+## Overview
+This analysis examines the connectivity of European countries based on shared borders, emphasizing distances between capital cities. Initial data cleaning removes duplicates, and a network graph is constructed for visualization. Insights include centralization patterns and distance variations. Shortest paths between countries are explored, considering both distance and country count. A Minimum Spanning Tree highlights key connections. The analysis offers a concise exploration of European country relationships and geographical dynamics.
+
+```{r, warning=FALSE,message=FALSE}
+library(visNetwork)
+library(dplyr)
+library(network)
+library(tidygraph)
+library(ggraph)
+library(igraph)
+```
+
+## Preprocessing the Data
+
+**Read Data:** The data file europe.csv, contains pairs of European countries that share borders and the distance between their capitals (not road distance, but straight-line distance).
+```{r}
+europe <- read.csv("europe.csv", header=T, sep=",")
+```
+
+First, it is essential to inspect for duplicate rows. For example, there could be instances where the dataset contains both the distance from country1 to country2 and a duplicate entry representing the distance from country2 to country1.    
+
+A new dataframe is created named rev_eu, containing the first two columns of 'europe'. Then, the column names are inverted, transforming 'country1' into 'country2' and vice versa. Following this transformation, an inner join is performed between 'europe' and 'rev_eu' on 'country1' and 'country2' columns to obtain the intersection.
+```{r}
+rev_eu <- europe[,1:2]
+colnames(rev_eu)<- c("country2","country1")
+
+duplicates <- inner_join(europe, rev_eu, by = c("country1", "country2"))
+duplicates
+
+```
+
+The presence of duplicates is observed, and a singular inconsistency is identified. The recorded distance reflects the straight-line measurement between the capitals of two countries. Consequently, it should remain consistent regardless of the direction, making any disparity between the values in one direction and another logically implausible.   
+
+Since they are duplicates it doesn't matter which instance of the two is kept. By subsetting the 'duplicates' dataframe to include only instances where 'country1' is alphabetically greater than 'country2', the preservation of a single representative from each pair is ensured. Finally, the duplicated entries are removed from the 'europe' dataframe using the 'setdiff' function:
+```{r}
+duplicates <- subset(duplicates, country1 > country2)
+
+europe <- setdiff(europe,duplicates)
+```
+
+The following code constructs a visual representation of European countries as nodes connected by edges, where the edges represent distances between the countries. The resulting visualization can be interactively explored, with an emphasis on highlighting neighboring countries when hovering over specific nodes.
+
+## Visualizing the Network
+
+**Nodes Creation:**
+We start by extracting unique country names (IDs) from the columns country1 and country2 in the europe dataset.
+The unique country IDs are then stored in a data frame named unique_countries.
+A new column named label is added to this data frame, containing the same values as the id column.
+```{r}
+
+# nodes
+unique_countries <- data.frame(id = unique(c(europe$country1, europe$country2)))
+unique_countries <- unique_countries %>% mutate(label = id)
+
+```
+
+**Edges Creation:**
+
+Edges between countries are defined using the columns country1, country2, and distance from the europe dataset.
+The data frame edges is created to store information about these edges, including the source country (from), target country (to), and the distance between them (value).
+```{r}
+# edges
+edges <- data.frame(from = c(europe$country1), to = c(europe$country2), value = c(europe$distance))
+```
+
+**Visualization:**
+
+The visNetwork function is then used to generate the network visualization.
+It takes unique_countries as the node data and edges as the edge data.
+The visOptions function is employed to enable the highlighting of nearest nodes when hovering over the visualization.
+Specifically, it highlights nodes with a degree of 1 (immediate neighbors) and provides a hover effect.
+The distance is conveyed through the thickness of the edge, while the nodes display the country name (zooming in may be required if the names are not visible).
+```{r}
+visNetwork(nodes = unique_countries, edges = edges) %>%
+  visOptions(highlightNearest = list(enabled = TRUE, degree = 1, hover = TRUE))
+
+```
+**Network creation**:
+Setting up a network structure with specified characteristics, such as undirected edges and the inclusion of vertex attributes based on unique countries. Subsequently, the network is transformed into a tidy graph representation for further analysis.
+```{r}
+network <- network(edges,vertex.attr = unique_countries,matrix.type = "edgelist",directed = FALSE)
+
+network_igraph_tidy <- as_tbl_graph(network)
+
+```
+
+**Visualizing Network with ggraph:**
+An aesthetically pleasing visualization of the network using ggraph with curved edges, sized, colored and labeled nodes. The width of the edge represents the distance of the connected nodes.
+```{r,warning=FALSE}
+ggraph(network_igraph_tidy, layout = "fr") +
+  geom_edge_arc(strength = 0.2, aes(width = value)) + 
+  scale_edge_width(range = c(0.1, 2), name = "Distance")+
+  geom_node_point(aes(size = 3, colour = id), show.legend = FALSE) + 
+  geom_node_text(aes(label = label, size = 3), show.legend = FALSE, repel = TRUE) +
+  theme_void()
+```
+
+## Insights derived from the two visualizations
+
+**Connectivity:**
+Immediately evident is the distinct isolation of the UK and Ireland, as they share connectivity solely with each other, given their absence of direct land borders with any other country. In contrast, central countries such as France, Austria, and others, demonstrate a higher degree of connectivity when compared to the peripheral nations.
+
+**Distance**:
+The thickness of edges represents the distance between countries. Thicker edges signify longer distances.    
+The geographical separation between the capital of Ukraine and those of its neighboring countries seems more pronounced when contrasted with other neighborhoods. Similarly, the capitals of Scandinavian countries exhibit notable distances from one another, a feature anticipated due to the expansive size of both Ukraine and the Scandinavian nations. Additionally, the capital of Ukraine is situated on its northern side, creating a significant distance from its southern neighbors. Conversely, in Central Europe, characterized by the presence of numerous smaller nations, a distinct trend toward closer proximity among their capitals is observed.   
+   
+## Shortest path between Greece and Finland
+
+**Identifying Node Indices for Greece and Finland**:
+The activate(nodes) function is used to focus on the nodes of the graph. Then, pull(label) is applied to extract the labels (country names) of these nodes. 
+With the use of the 'which' function the code finds the indices of the nodes corresponding to "Greece" and "Finland" in the list of country labels. The resulting indices are stored in the variables 'from' and 'to'. These indices will be used to identify the starting and ending nodes for finding the shortest path.
+```{r}
+
+countries <- network_igraph_tidy %>%
+  activate(nodes) %>%
+  pull(label)
+
+from <- which(countries == "Greece")
+to <-  which(countries == "Finland")
+
+```
+
+**Finding Shortest path**    
+The cost is determined by the distance of the capitals of the countries:
+```{r}
+shortest <- network_igraph_tidy %>%
+  morph(to_shortest_path, from, to, weight = value)
+
+shortest <- shortest %>%
+  mutate(selected_node = TRUE) %>%
+  activate(edges) %>%
+  mutate(selected_edge = TRUE) %>%
+  unmorph() 
+shortest <- shortest %>%
+  activate(nodes) %>%
+  mutate(selected_node = ifelse(is.na(selected_node), 1, 2)) %>%
+  activate(edges) %>%
+  mutate(selected_edge = ifelse(is.na(selected_edge), 1, 2)) %>%
+  arrange(selected_edge)
+shortest %>%
+  ggraph(layout = "fr") +
+  geom_edge_diagonal(aes(alpha = selected_edge), color = "gray") +
+  geom_node_point(aes(size = 3, color = id, alpha = selected_node))+
+  geom_node_text(aes(label = label, alpha = selected_node ), size = 3, repel = TRUE) + 
+  theme_void() +
+  theme(legend.position = "none")
+```
+
+The total cost of the path in terms of distance:
+```{r}
+shortest %>%
+  activate(edges) %>%
+  as_tibble() %>%
+  filter(selected_edge == 2) %>%
+  summarise(total_cost = sum(value)) %>%
+  pull(total_cost)
+```
+
+The cost is determined by the number of countries one crosses:
+```{r}
+shortest <- network_igraph_tidy %>%
+  morph(to_shortest_path, from, to)
+
+shortest <- shortest %>%
+  mutate(selected_node = TRUE) %>%
+  activate(edges) %>%
+  mutate(selected_edge = TRUE) %>%
+  unmorph() 
+shortest <- shortest %>%
+  activate(nodes) %>%
+  mutate(selected_node = ifelse(is.na(selected_node), 1, 2)) %>%
+  activate(edges) %>%
+  mutate(selected_edge = ifelse(is.na(selected_edge), 1, 2)) %>%
+  arrange(selected_edge)
+shortest %>%
+  ggraph(layout = "fr") +
+  geom_edge_diagonal(aes(alpha = selected_edge), color = "gray") +
+  geom_node_point(aes(size = 3, color = id, alpha = selected_node))+
+  geom_node_text(aes(label = label, alpha = selected_node ), size = 3, repel = TRUE) + 
+  theme_void() +
+  theme(legend.position = "none")
+
+```
+
+The total cost of the path in terms of distance:
+```{r}
+shortest %>%
+  activate(edges) %>%
+  as_tibble() %>%
+  filter(selected_edge == 2) %>%
+  summarise(total_cost = sum(value)) %>%
+  pull(total_cost)
+```
+
+The shortest path between Greece and Finland varies based on the criterion chosen for measurement. In the first scenario, the cost is determined by the distance between the capitals of the countries, and this route involves traversing a total of six countries between Greece and Finland. In the second scenario, the cost is determined by the number of countries one crosses and this route involves four countries between the two.
+    
+Of course, the second path may involve fewer countries in between. However, as demonstrated earlier, the distance is greater compared to the first path, which requires traversing more countries. Opting to travel all the way to Russia, only to make a direct route to Estonia and then Finland, bypassing the geographically closer countries between Ukraine and Estonia, significantly adds to the overall distance.
+   
+Now, if the objective is to traverse fewer countries for whatever reason (simplified logistics, reduced bureaucracy, or avoiding potential geopolitical issues), the distance becomes irrelevant.
+    
+On the other hand, if distance is a crucial factor, opting for a shorter route might be preferred despite crossing more countries. This could be important for minimizing transportation costs, fuel consumption, or travel time.
+
+## Minimum Spanning Tree
+
+The morph function is used to create a subgraph (minimum spanning tree) representation of the original. Then, by assigning a value of 2 to the selected edges and 1 to the unselected ones, these values are utilized as transparency indicators when rendering the graph.
+```{r}
+mst <- network_igraph_tidy %>%
+  morph(to_minimum_spanning_tree,value)
+
+mst <- mst %>%
+  mutate(selected_node = TRUE) %>%
+  activate(edges) %>%
+  mutate(selected_edge = TRUE) %>%
+  unmorph() 
+
+mst <- mst %>%
+  activate(edges) %>%
+  mutate(selected_edge = ifelse(is.na(selected_edge), 1, 2)) %>%
+  arrange(selected_edge)
+```
+
+A visual representation of the minimum spanning tree with nodes and edges, where the edge transparency indicates their selection status:
+```{r}
+ggraph(mst,layout = "fr") +
+  geom_edge_diagonal(aes(alpha = selected_edge*2), color = "black") +
+  geom_node_point(aes(size = 3, color = id))+
+  geom_node_text(aes(label = label ), size = 3, repel = TRUE) + 
+  theme_void() +
+  theme(legend.position = "none")
+```
+    
+
+**The total cost of the minimum spanning tree:** By focusing on the selected edges, the total cost is computed by summing the value (distance) of each edge.
+```{r}
+mst %>%
+  activate(edges) %>%
+  as_tibble() %>%
+  filter(selected_edge == 2) %>%
+  summarise(total_cost = sum(value)) %>%
+  pull(total_cost)
+```
+
+As anticipated, the central European countries (Austria, Poland, France and others), function as essential hubs connecting the peripheral nations. Interestingly, despite sharing borders with numerous countries, France and Ukraine (some other central countries as well) do not emerge as a significant hub for most, in contrast to Austria, which stands out as the most central node in the network. This phenomenon can be attributed, in part, to the vast size of France and Ukraine, as well as the distance of their capitals from the regional nexus.    
+    
+This dynamic not only emphasizes the geographical significance of Austria but also highlights the intricate and nuanced nature of the network, where certain nodes assume a more central and influential role in shaping the overall connectivity landscape.
