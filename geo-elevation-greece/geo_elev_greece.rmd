@@ -1,0 +1,516 @@
+---
+title: "Geospatial Analysis of Elevation in Greece"
+author: "Styliani Kalaitzaki"
+date: "December 2023"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+## Introduction
+In this analysis, explores spatial and raster data for the Mediterranean region, with a focus on Greece. The objective is to visualize and analyze elevation data within the administrative boundaries of Greece and associate elevation information with key cities.
+
+**Load Libraries:**
+```{r, warning=FALSE,message=FALSE}
+
+library(sf)          # classes and functions for vector data
+library(terra)      # classes and functions for raster data
+library(spData)        # load geographic data
+library(spDataLarge)   # load larger geographic data
+library(dplyr)
+library(mapsf)
+library(tmap)
+library(leaflet) # for interactive maps
+library(ggplot2)
+
+```
+
+**Load Raster Data** :Loading and plotting a raster file containing elevation data for the Mediterranean region.
+```{r}
+raster_file = rast("30n000e_20101117_gmted_mea300.tif")
+class(raster_file)
+plot(raster_file, col = terrain.colors(6))
+```
+
+There are some faint distinctions of Greece to the right, Italy in the center, and above it, the Alps visible towards the upper left.
+
+
+**Read Shapefiles** : Reading three shapefiles: one for the administrative boundaries of Greece (GRC_adm2.shp), one for their capitals (poleis.shp), and one for general locations (places.shp).
+```{r}
+nomoi <- st_read("GRC_ADM2/GRC_adm2.shp")
+poleis <- st_read("poleis/poleis.shp")
+places <- st_read("places/places.shp")
+```
+
+
+
+An important observation is that the nomoi file comprises 77 administrative regions, whereas the capitals consist of 51. This disparity will be revisited later. Furthermore, it's noteworthy that the geometry of nomoi is multipolygon using longitude and latitude, while the capitals and places have point geometries and are projections in Greek Grid. This aspect is addressed further down in the analysis to ensure a cohesive representation when plotting them on the same map.
+
+## Raster of Greece
+
+**Crop Raster to Greece's Bounding Box**:
+
+Extracting the bounding box (the rectangular area that contains all the points) of the administrative boundaries of Greece.
+```{r}
+# Get the bounding box of Greece
+bbox_greece <- st_bbox(nomoi)
+```
+
+Using this bounding box to crop the elevation data raster to include only the area of Greece.
+```{r}
+
+# Crop raster to the bounding box of Greece
+raster_greece <- crop(raster_file, bbox_greece)
+```
+
+**Mask Raster with Greece's Geometry**:
+
+Using the actual geographical shape of Greece to mask the elevation data raster. This means keeping only the elevation values that fall within the borders of Greece.
+```{r}
+
+# Mask raster using the geometry of Greece
+raster_greece <- mask(raster_greece, nomoi)
+
+```
+
+**Plot the resulting raster**: Finally, plotting the newly created raster file, which now contains elevation data only for Greece.
+```{r}
+plot(raster_greece, col = terrain.colors(6))
+```
+    
+The towering peak of Mount Olympus, the highest point in Greece, prominently marks the map with its distinctive white hue. Other smaller white points, though present, are less conspicuous due to their limited area size. 
+
+
+## Greek Regional Capitals as proportional points
+
+
+**City Elevation Analysis**: To accurately depict city locations on the regional map, it is imperative to transform the city coordinate reference system to match the longitude-latitude format used for the regions:
+```{r}
+poleis_latlon <- st_transform(poleis, crs(raster_greece))
+```
+
+Then calculating elevation values for each city(regional capitals) within Greece:
+```{r}
+# Extract elevation values from the raster map at the locations of cities
+elev_values <- extract(raster_greece, poleis_latlon)
+
+
+# Add elevation values in poleis_latlon
+poleis_latlon$elevation <- elev_values
+
+```
+
+**Visualization of Administrative Boundaries and Cities with Elevation Information**:
+Finally, plotting the administrative boundaries of Greece and overlay capitals with elevation information, represented by red points whose size is proportional to the elevation:
+```{r}
+# Extract the elevation and normalize it
+cex <-poleis_latlon$elevation[2] / (max(poleis_latlon$elevation)/2)
+
+# Plot the raster map of Greece
+plot(raster_greece, col = terrain.colors(6), reset = FALSE)
+
+# Plot the boundaries of the regions ("nomoi") on top of the raster map
+plot(nomoi["geometry"],add = TRUE,axes = TRUE)
+
+# Plot the red points representing the regional capitals on top of the map
+# Use the normalized elevation value to adjust the size of the points
+plot(poleis_latlon[0], add = TRUE, col = "red", pch = 16, cex = cex[,1])
+```
+
+(Some points may be challenging to observe due to their smaller size in comparison to the larger ones)
+
+The majority of higher-elevated cities are concentrated in the northern regions of the country. Among the capitals, `r poleis_latlon$NAME[which.max(poleis_latlon$elevation[[2]])]` boasts the highest elevation. This finding aligns with the known geography of central Greece. Nestled amidst mountainous landscapes, as illustrated in the elevation map of Greece, `r poleis_latlon$NAME[which.max(poleis_latlon$elevation[[2]])]` is situated in proximity to the Pindos mountain range. Notably, the capitals situated near the Pindos mountain range exhibit higher elevations, whereas those situated near the sea generally attain lower elevations. Reinforcing this, the capital with the lowest elevation is `r poleis_latlon$NAME[which.min(poleis_latlon$elevation[[2]])]`.
+
+Moreover, it is probable that regions situated near the sea would instinctively position their capitals near ports, whereas inland areas, lacking direct access to the sea, may have historically chosen elevated locations for enhanced protection. This strategic decision-making traces back to ancient times, contributing to the development of these areas that were eventually established as capitals in the modern era.
+
+
+## Regional Mean Elevation and Standard Deviation
+
+**Data Preparation:**
+```{r}
+# Extract elevation values for each region
+elev_values <- extract(raster_greece, nomoi)
+
+# Factorize the ID column to perform a group by on it
+elev_values$ID <- factor(elev_values$ID)
+
+
+# Rename the elevation column
+elev_values <- elev_values %>%
+  rename_at(vars(2), ~ "elevation")
+
+# Group by the "ID" column and Summarize the grouped data (calculate mean and sd)
+elev_values <- elev_values %>% group_by(ID) %>% summarize(mean_value = mean(elevation),sd_value = sd(elevation))
+
+
+# Add mean and sd to the original nomoi dataset
+nomoi$mean_elevation <- elev_values[[2]]
+nomoi$sd_elev <- elev_values[[3]]
+
+```
+
+The dataset nomoi now includes two new columns, mean_elevation and sd_elev representing the mean and standard deviation of elevation for each region.
+
+
+**Visualizing Mean Elevation**    
+Visualizing the geographic distribution of mean elevation across administrative regions in Greece:
+```{r}
+mf_theme("default")
+
+mf_map(
+  x = nomoi,
+  var = "mean_elevation",
+  type = "choro",
+  breaks = "geom",
+  nbreaks = 5,
+  pal = terrain.colors(8, alpha=1, rev = FALSE),
+  border = "white",
+  lwd = 0.5,
+  leg_pos = "topright",
+  leg_title = "Mean Elevation",
+)
+```
+
+The choropleth map provides a visual representation of the mean elevation across different administrative regions in Greece. Regions with higher mean elevations are depicted with distinct colors, allowing for a quick and intuitive understanding of the geographic patterns.
+
+**Comments:**    
+As anticipated, the highest mean elevation is notably found in the areas surrounding the Pindos mountain range. As one moves away from the central mainland towards the coast, there is a discernible decrease in the mean elevation.
+
+Two intriguing exceptions to this trend are the islands of Crete and Ikaria, that stand out for their remarkable mountainous terrain, defying the typical expectations for an island.
+
+**Visualizing Standard Deviation of Elevation**    
+Similarly, a choropleth map to visualize the standard deviation of elevation across administrative regions:
+
+```{r}
+mf_theme("default")
+
+mf_map(
+  x = nomoi,
+  var = "sd_elev",
+  type = "choro",
+  breaks = "geom",
+  nbreaks = 5,
+  pal = terrain.colors(8, alpha=1, rev = FALSE),
+  border = "white",
+  lwd = 0.5,
+  leg_pos = "topright",
+  leg_title = "Standar Deviation of Elevation"
+)
+```
+**Comments:**    
+Once again, the Pindos mountain range stands out as the focal point where elevated standard deviation values are consistently noted. This observation implies a notably diverse topography within these regions.
+
+In fact, the majority of Greece showcases a varied landscape, featuring a mix of elevated and lower terrains across its expanse. This characteristic is emblematic of a mountainous terrain enveloped by the sea, with coastlines in close proximity, contributing to the rich topographical tapestry of the country.
+
+## Absolute Difference
+
+Spatially associating each region with its corresponding capital, determining the region to which each capital belongs. Then, computing the absolute difference between the mean elevation of the region and the elevation of its capital.
+```{r}
+# Ensure the validity of administrative region geometries
+nomoi <- st_make_valid(nomoi)
+
+# Spatially join cities with administrative regions based on the "within" relationship
+nomoi_with_capitals <- st_join(poleis_latlon,nomoi, join = st_within)
+
+# Calculate absolute difference in elevation between cities and their associated administrative regions
+nomoi_with_capitals$abs_diff_elevation <- unlist(abs(nomoi_with_capitals$elevation[2] - nomoi_with_capitals$mean_elevation))
+
+```
+**Data preprocessing:**
+As discovered previously the regions in the data are more than the capitals. Thus, filtering the dataframe nomoi to keep only the regions with capitals: 
+```{r}
+# Find the intersection of feature_id between nomoi and nomoi_with_capitals
+inter <- intersect(nomoi$feature_id,nomoi_with_capitals$feature_id)
+
+# Filter nomoi based on the common feature_id values obtained from the intersection
+filtered_nomoi <- nomoi %>%
+  filter(feature_id %in% inter)
+
+# Add a new column 'abs_diff_elevation' to filtered_nomoi and populate it with corresponding values from nomoi_with_capitals
+filtered_nomoi$abs_diff_elevation <- nomoi_with_capitals$abs_diff_elevation[match(filtered_nomoi$feature_id, nomoi_with_capitals$feature_id)]
+
+```
+
+The extra regions are just further sub divisions of larger regions (e.g. Attica -> West,North,South,East Attica) or errors:
+```{r}
+diff <- nomoi %>%
+  filter(feature_id %in% setdiff(nomoi$feature_id,nomoi_with_capitals$feature_id))
+
+diff$NAME
+```
+**Visualizing Absolute Difference of Elevation:**
+A choropleth map to visualize the absolute difference of elevation between the regions and their capitals:
+```{r}
+mf_theme("default")
+# plot population density
+mf_map(
+  x = filtered_nomoi,
+  var = "abs_diff_elevation",
+  type = "choro",
+  breaks = "geom",
+  nbreaks = 5,
+  pal = terrain.colors(8, alpha=1, rev = FALSE),
+  border = "white",
+  lwd = 0.5,
+  leg_pos = "topright",
+  leg_title = "Absolute Difference"
+)
+```
+    
+The substantial variance between the mean elevation of regions and the elevations of their respective capitals is prevalent across many areas. While most capitals are situated near sea level and boast relatively low altitudes, the presence of towering mountains in these regions significantly raises the overall mean elevation. This phenomenon results in a pronounced disparity. Even capitals positioned away from coastal areas exhibit a substantial deviation from the highest points within the region. With the exception only of a handful of capitals which align with the general altitudes prevalent in their respective regions.
+
+
+## Top 10 regions
+
+The top 10 regions based on the mean elevation:
+```{r}
+nomoi[order(nomoi$mean_elevation, decreasing = TRUE), "NAME"][1:10,]$NAME
+```
+
+The top 10 regions based on the standard deviation of elevation:
+```{r}
+nomoi[order(nomoi$sd_elev, decreasing = TRUE), "NAME"][1:10,]$NAME
+```
+
+## Visualizing Altitudes Above 1500 Meters: Inhabited and Uninhabited Locations in Greece
+
+**Preprocessing:**    
+Converting the reference system of places to longitude-latitude:
+```{r}
+places_latlon <- st_transform(places, crs(raster_greece))
+```
+
+Calculating elevation values for each place within Greece:
+```{r}
+elev_values <- extract(raster_greece, places_latlon)
+colnames(elev_values) <- c("ID","value")
+
+# Add elevation values in places_latlon
+places_latlon$elevation <- elev_values
+```
+
+Upon examination, it becomes evident that certain data points exhibit discrepancies; they either represent errors, given that they do not correspond to locations within Greece, or they are absent from the regional data used to derive the elevation raster for Greece. Consequently, the elevation values for these data points are recorded as NA:
+```{r}
+places_latlon[is.na((places_latlon[["elevation"]][,2])),]
+```
+
+Among these locations, the ones which are located within Greece exclusively comprise small islands, as discerned from their zero populations, unlikely to surpass 1500 meters. Consequently, these islands can be confidently omitted from consideration.
+
+```{r}
+# Filter places_latlon to include only locations with elevation higher than 1500 meters
+places_higher_than_1500 <- na.omit(places_latlon[places_latlon[["elevation"]][,2] > 1500,])
+
+# Keep only inhabited places (population > 0) among those with elevation higher than 1500
+inhabited <- subset(places_higher_than_1500, population > 0)
+
+# Keep only uninhabited places (population == 0) among those with elevation higher than 1500
+uninhabited <- subset(places_higher_than_1500, population == 0)
+```
+
+```{r}
+inhabited
+uninhabited
+```
+
+```{r, message=FALSE}
+tmap_mode("view")
+
+names(raster_greece) <- "elevation"
+
+tm_shape(raster_greece) + tm_raster("elevation", palette = terrain.colors(6)) + tm_shape(nomoi) + tm_borders() + tm_shape(uninhabited) + tm_dots(col = "red", size = 0.1) +tm_text("name", just = "top") + tm_shape(inhabited) + tm_dots(col = "green", size = 0.1) + 	tm_text("name", just = "top")
+
+```
+
+**Comments:**    
+    
+There are a total of 7 locations situated at elevations exceeding 1500 meters, and intriguingly, Samarina stands as the lowest among them, being the sole inhabited one.
+
+Settling in areas above 1500 meters is unusual due to harsh environmental conditions, including extreme cold, limited resources, and lower oxygen levels, making sustained habitation challenging. However, factors such as historical significance or unique cultural and economic circumstances may contribute to rare instances of population concentration in such elevated areas, as exemplified by Samarina.
+
+This particular location likely developed over the years as its challenges provided safety to its inhabitants, enabling them to survive, unlike the other six locations, which are even higher and presumably have harsher conditions. This trend is reminiscent of the Turkish occupation in Greece, where Greeks often isolated themselves in small remote communities, especially in mountains, to escape their oppressors.
+
+Despite signs of human life dating back to primitive eras, the more recent wars have brought fame to the location for the contribution of its inhabitants to the revolution, as immortalized in the Greek folklore song "Children of Samarina". The area's historical resilience and cultural significance underscore its enduring importance in the region, making it a compelling tourist attraction as well.
+
+
+
+
+
+## Raster Reclassification
+
+```{r}
+# Class breaks
+breaks <- c(0, 500, 1000, 1500, 2000, 2500, 3000)
+m <- c(0, 500,
+       500, 1000,
+       1000, 1500,
+       1500, 2000,
+       2000, 2500,
+       2500, 3000)
+
+# Create Matrix
+rcl <- cbind(breaks[-length(breaks)], breaks[-1])
+rclmat <- matrix(m, ncol=2, byrow=TRUE)
+
+# Classify raster
+raster_reclassified <- classify(raster_greece, rclmat, include.lowest=TRUE)
+
+
+plot(raster_reclassified, reset = FALSE, col = terrain.colors(6), main = "Reclassified Elevation")
+
+```
+
+## Grevena - Ioannina Line
+
+Coordinates of Grevena and Ioannina:
+```{r}
+# Get coordinates
+grevena_coord <- st_coordinates(subset(poleis_latlon, NAME == "Grebena"))
+ioannina_coord <- st_coordinates(subset(poleis_latlon, NAME == "Ioannina"))
+
+# Combine the coordinates into a single data frame 'x'
+x <-data.frame(rbind(grevena_coord,ioannina_coord))
+colnames(x) <- c("lon", "lat")
+
+points <- st_as_sf(x, coords = c("lon", "lat"), crs = 4326)
+```
+
+Create line and plot it on the map:
+```{r, warning=FALSE}
+# Combine Grebena and Ioannina coordinates into a linestring object, assign CRS, and create an sf object
+grevion_transect = rbind(grevena_coord,ioannina_coord) |>
+  st_linestring() |> 
+  st_sfc(crs = crs(raster_greece)) |>
+  st_sf(geometry = _)
+
+# Add an 'id' column to grevion_transect
+grevion_transect$id = 1:nrow(grevion_transect)
+
+# Segmentize the linestring into smaller segments with a maximum length of 250 units
+grevion_transect = st_segmentize(grevion_transect, dfMaxLength = 250)
+
+# Convert the linestring to points
+grevion_transect = st_cast(grevion_transect, "POINT")
+
+# Calculate distances along the transect and add as a 'dist' column
+grevion_transect = grevion_transect |> 
+  group_by(id) |> 
+  mutate(dist = st_distance(geometry)[, 1]) 
+
+# Extract elevation values from the raster data for the transect points
+grevion_elev = terra::extract(raster_greece, grevion_transect)
+
+# Combine the transect points with elevation values
+grevion_transect = cbind(grevion_transect, grevion_elev)
+
+plot(raster_reclassified, reset = FALSE, col = terrain.colors(6))
+plot(grevion_transect,add = TRUE, col = "red",cex = 0.2)
+plot(points, add = TRUE, col = "blue", pch = 19)
+text(x = x$lon, y = x$lat, labels = c("Grebena", "Ioannina"), pos = 3, offset = 0.5, col = "black")
+
+
+plot(grevion_transect$dist,grevion_transect[[4]],xlab = "Distance",ylab = "Elevation", type = "l")
+
+# Calculate midpoint and add a vertical line at the midpoint
+midpoint <- (max(grevion_transect$dist) + min(grevion_transect$dist)) / 2
+abline(v = midpoint, col = "red", lty = 2)
+```
+
+The straight line linking 'Grebena' and 'Ioannina' traverses a mountain range, with altitudes steadily rising until approximately the midpoint, after which they begin to decline. In proximity to 'Ioannina,' there is a renewed ascent in altitude, followed by a subsequent descent. This indicates the presence of a valley nestled between an extensive mountain range and a solitary high peak just before the city, namely 'Mitsikeli.' The abrupt decline is likely influenced by the presence of a lake situated at the foothills of the mountain, right in front of the city. Additionally, the trajectory of the line creates numerous small plateaus along its course indicating a diverse and dynamic landscape. 
+
+## Thiva - Athens Line
+
+Coordinates of Thiva and Athens:
+```{r}
+# Get coordinates
+thiva_coord <- st_coordinates(subset(places_latlon, name == "Θήβα (Thiva)"))
+athens_coord <- st_coordinates(subset(poleis_latlon, NAME == "Athens"))
+
+# Combine the coordinates into a single data frame 'x'
+x <-data.frame(rbind(thiva_coord,athens_coord))
+colnames(x) <- c("lon", "lat")
+
+points <- st_as_sf(x, coords = c("lon", "lat"), crs = 4326)
+```
+
+
+Create line and plot it on the map:
+```{r, warning=FALSE}
+# Combine Thiva and Athens coordinates into a linestring object, assign CRS, and create an sf object
+thivath_transect = rbind(thiva_coord,athens_coord) |>
+  st_linestring() |> 
+  st_sfc(crs = crs(raster_greece)) |>
+  st_sf(geometry = _)
+
+# Add an 'id' column to grevion_transect
+thivath_transect$id = 1:nrow(thivath_transect)
+
+# Segmentize the linestring into smaller segments with a maximum length of 250 units
+thivath_transect = st_segmentize(thivath_transect, dfMaxLength = 250)
+
+# Convert the linestring to points
+thivath_transect = st_cast(thivath_transect, "POINT")
+
+# Calculate distances along the transect and add as a 'dist' column
+thivath_transect = thivath_transect |> 
+  group_by(id) |> 
+  mutate(dist = st_distance(geometry)[, 1]) 
+
+# Extract elevation values from the raster data for the transect points
+thivath_elev = terra::extract(raster_greece, thivath_transect)
+
+# Combine the transect points with elevation values
+thivath_transect = cbind(thivath_transect, thivath_elev)
+
+plot(raster_reclassified, reset = FALSE, col = terrain.colors(6))
+plot(thivath_transect,add = TRUE, col = "red",cex = 0.2)
+plot(points, add = TRUE, col = "blue", pch = 19)
+text(x = x$lon, y = x$lat, labels = c("Thiva", "Athens"), pos = 3, offset = 0.1, col = "black")
+
+
+plot(thivath_transect$dist,thivath_transect[[4]],xlab = "Distance",ylab = "Elevation", type = "l")
+
+
+# Calculate midpoint and add a vertical line at the midpoint
+midpoint <- (max(thivath_transect$dist) + min(thivath_transect$dist)) / 2
+abline(v = midpoint, col = "red", lty = 2)
+```
+
+The direct line connecting 'Thiva' and 'Athens' demonstrates a gradual ascent in altitude that begins to decline well before reaching the midpoint. There is only a minor elevation just before approaching 'Athens'. Again, rather than a rugged, sharply defined landscape, these small plateaus suggest a more subdued and gently undulating topography
+
+## Extra
+**1:** Follows a brief exploration of a shapefile containing the locations of ancient Greek theaters, with an examination of its potential correlation with the topographical elevation of the land.
+
+Basemap Link: https://www.ascsa.edu.gr/pdf/uploads/CorinthMaps/Basemap.zip
+```{r}
+theaters <- st_read("AncientTheaters/AncientTheaters.shp",options = "ENCODING=WINDOWS-1252")
+theaters <- st_transform(theaters, crs(raster_greece))
+
+plot(raster_greece, col = terrain.colors(6), reset = FALSE)
+plot(st_geometry(theaters), add = TRUE, col = "magenta", pch = 16)
+
+basemap = rast("Basemap.tif")
+theaters <- st_transform(theaters, crs(basemap))
+plot(basemap, reset = FALSE)
+plot(st_geometry(theaters), add = TRUE, col = "magenta", pch = 16)
+```
+
+
+Ancient Greek theaters were typically built in locations with specific considerations for acoustics, aesthetics, and practicality. 
+    
+The primary observation that stands out is the evident proximity of these theaters to the sea. It appears that theaters were strategically positioned to capitalize on scenic views, whether it be overlooking the sea or a picturesque landscape. This deliberate placement not only enhanced the overall experience for the audience but also significantly contributed to the aesthetic allure of the theaters.
+    
+The second noteworthy observation is the proximity of these theaters to, though not directly atop, mountainous areas. This aligns with the expectation, as Greek theaters were commonly built on natural slopes or hillsides. The inherent incline served as an ideal foundation for seating arrangements, guaranteeing optimal visibility for the audience. Additionally, the slope played a crucial role in enhancing acoustics, facilitating effective sound propagation throughout the theater.
+
+
+**2:** Follows a brief exploration of a shapefile containing the railway lines in Greece, with an examination of their potential correlation with the topographical elevation of the land.
+```{r}
+
+railways <- st_read("railways/railways.shp")
+railways <- st_transform(railways, crs(raster_greece))
+
+plot(raster_greece, col = terrain.colors(6), reset = FALSE)
+plot(st_geometry(railways), add = TRUE, col = "red", pch = 16)
+```
+
+It is evident that the railway lines strategically avoid the denser and higher elevated mountainous regions, primarily traversing low-altitude flatlands or coastlines. While in the Peloponnese, it may seem to traverse the mountain range, upon closer inspection, it becomes apparent that the route strategically follows lower altitude valleys.
